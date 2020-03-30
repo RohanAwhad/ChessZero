@@ -1,119 +1,106 @@
 #!/usr/bin/env python3
+
 import chess
 import numpy as np
-import pandas as pd
 
-def state_wise_matrix(bstate, state, threshold, greater_than, less_than, equal):
-    for i in range(bstate.shape[0]):
-        if greater_than and bstate[i] > threshold: state[i//8][i%8] = bstate[i]-8
-        elif less_than and bstate[i] < threshold: state[i//8][i%8] = bstate[i]
-        if equal and bstate[i] == threshold: state[i//8][i%8] = bstate[i]
-   
-    return state
+class State():
+	def __init__(self, player_color, board=None):
+		if board == None:
+			self.board = chess.Board()
+		else:
+			self.board = board
 
-def normalize(state, min_value, max_value):
-   for i in range(state.shape[0]):
-        for j in range(state.shape[1]):
-            if state[i][j] > min_value:
-                state[i][j] = (state[i][j] - min_value)/(max_value-min_value)
+		self.player_color = player_color		
+		self.M = 12
+		self.T = 7
+		self.L = 7 # 4 Castling 1 repcounter 1 move number 1 player color
+		self.ip = np.zeros((8, 8, self.M * self.T + self.L))
+		self.color = [1, 0]
+		self.piece_types = ['p', 'n', 'r', 'b', 'q', 'k']
 
-   return state
+	def serialize_ip(self, move_number):
+		assert self.board.is_valid()
 
-class State(object):
-    def __init__(self, board=None):
-        if board is None:
-            self.board = chess.Board()
-        else:
-            self.board = board
+		historical_pieces = self.ip[:, :, :-(self.M + self.L)]
+		piece_positions = []
+		for i in self.color:
+			for piece_type in self.piece_types:
+				temp = np.zeros((8, 8))
+				for index in range(64):
+					piece = self.board.piece_at(index)
+					if piece is not None and int(piece.color) == i and piece.symbol().lower() == piece_type:
+						row = index // 8
+						col = index % 8
+						temp[row][col] = 1
 
-    def edges(self):
-        return list(self.board.legal_moves)
+				temp = np.flip(temp, axis=0) if self.player_color == 0 else temp
+				piece_positions.append(temp)
 
+		for i in piece_positions:
+			historical_pieces = np.dstack((i, historical_pieces))
 
-    def serialize(self):
-        assert self.board.is_valid()
+		assert historical_pieces.shape == (8, 8, self.M * self.T)
 
-        bstate = np.zeros(64, np.uint8)
-        for i in range(64):
-            pp = self.board.piece_at(i)
-            if pp is not None:
-                bstate[i] = {'P':1, 'N':2, 'B':3, 'R':4, 'Q':5, 'K':6, \
-                             'p':9, 'n':10, 'b':11, 'r':12, 'q':13, 'k':14}[pp.symbol()]
+		L_ip = self.ip[:, :, -self.L:]
 
+		# CASTLING SERIALIZATION
+		if self.board.has_kingside_castling_rights(chess.WHITE):
+			L_ip[:, :, 0] = np.ones((8, 8))
+		else:
+			L_ip[:, :, 0] = np.zeros((8, 8))
 
-        #binary state
-        state = np.zeros((6,8,8), np.uint8)
-        
-        # get black's position
-        state[0] = state_wise_matrix(bstate, state[0], 8, True, False, False)
-        
-        # get white's position
-        state[1] = state_wise_matrix(bstate, state[1], 8, False, True, False)
+		if self.board.has_queenside_castling_rights(chess.WHITE):
+			L_ip[:, :, 1] = np.ones((8, 8))
+		else:
+			L_ip[:, :, 1] = np.zeros((8, 8))
 
-        if self.board.has_queenside_castling_rights(chess.WHITE):
-            assert bstate[0] == 4
-            bstate[0] = 7
-        if self.board.has_kingside_castling_rights(chess.WHITE):
-            assert bstate[7] == 4
-            bstate[7] = 7
+		if self.board.has_kingside_castling_rights(chess.BLACK):
+			L_ip[:, :, 2] = np.ones((8, 8))
+		else:
+			L_ip[:, :, 2] = np.zeros((8, 8))
 
-        if self.board.has_queenside_castling_rights(chess.BLACK):
-            assert bstate[56] == 8+4
-            bstate[56] = 8+7
-        if self.board.has_kingside_castling_rights(chess.BLACK):
-            assert bstate[63] == 8+4
-            bstate[63] = 8+7
-        
-        
-        #get black's castling options
-        for i in (14, 15):
-            state[2] = state_wise_matrix(bstate, state[2], i, False, False, True)
-                
-        temp = pd.DataFrame(state[2])
-        temp.replace(14, 14-8, inplace=True)
-        temp.replace(15, 1, inplace=True)
-        state[2] = np.array(temp)
+		if self.board.has_queenside_castling_rights(chess.BLACK):
+			L_ip[:, :, 3] = np.ones((8, 8))
+		else:
+			L_ip[:, :, 3] = np.zeros((8, 8))
 
-        #get white's castling options
-        for i in (6, 7):
-            state[3] = state_wise_matrix(bstate, state[3], i, False, False, True)
+		# REPETITION SERIALIZATION
+		rep_cntr = 0
+		while self.board.is_repetition(rep_cntr+1):
+			rep_cntr += 1
+		L_ip[:, :, 4] = np.ones((8, 8)) * rep_cntr
 
-        temp = pd.DataFrame(state[3])
-        temp.replace(7, 1, inplace=True)
-        state[3] = np.array(temp)
+		# MOVE NUMBER
+		L_ip[:, :, 5] = np.ones((8, 8)) * move_number
 
-        if self.board.ep_square is not None:
-            assert bstate[self.board.ep_square] == 0
-            bstate[self.board.ep_square] = 8
-       
-        state[4] = state_wise_matrix(bstate, state[4], 8, False, False, True)
-        state[4] = state[4]//8 
-        
-        # 0-3 cols to binary
-        #state[0] = (bstate>>3)&1 # Black's position
-        #state[1] = (bstate>>2)&1 # castling options 
-        #state[2] = (bstate>>1)&1
-        #state[3] = (bstate>>0)&1
+		# PLAYER COLOR
+		L_ip[:, :, 6] = np.ones((8, 8)) * self.player_color
 
+		serialized_ip = np.dstack((historical_pieces, L_ip))
 
-        # 4th col is who's turn is it
-        state[5] = (self.board.turn*1.0)
+		return serialized_ip
 
-        # temporary
-        print(bstate)
-        
-        return state
+	def is_over(self):
+		return self.board.is_game_over()
 
+	def score(self):
+		assert self.is_over()
+		result = self.board.result()
+		if len(result) > 3:
+			return 0
+		else:
+			if result[0] == '1':
+				return 1
+			else:
+				return -1
 
-    def shredder_fen_to_vec(x):
-        pass
+if __name__ == '__main__':
+	white = State(1)
+	black = State(0, board=white.board)
+	#print(white.serialize_ip(0)[:, :, 0])
+	#print(black.serialize_ip(0)[:, :, 0])
+	black.ip = black.serialize_ip(1)
+	for i in range(90):
+		print(black.ip[:, :, i])
 
-if __name__=='__main__':
-    s = State()
-    state = s.serialize()
-    print('Black Position\n',state[0])
-    print('White Position\n',state[1])
-    print('Black Castling Options\n',state[2])
-    print('White Castling Options\n',state[3])
-    print('En passant\n',state[4])
-    print('Turn\n',state[5])
+	print(black.ip[:, :, :12])
