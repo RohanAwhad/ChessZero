@@ -119,7 +119,9 @@ class MonteCarloTreeSearch():
 		white_old_ip = self.white_state.ip
 		black_old_ip = self.black_state.ip
 
-		for i in range(1600):
+		no_of_simulations = 800
+
+		for i in range(no_of_simulations):
 			node, result, pop_len = self.traverse(root, move_number)
 			self.backup(node, result)
 			
