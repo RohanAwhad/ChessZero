@@ -4,12 +4,14 @@ from actor_critic import Agent
 from state import State
 import numpy as np
 import sys
+from pickle import dump
 
 class Node():
-	def __init__(self, state, policy, player):
+	def __init__(self, state, parent, policy, player):
 		assert state.shape == (1, 8, 8, 91)
 		self.state = state # shape (1, 8, 8, 91)
 		self.player = player # 1 for white 0 for black
+		self.parent = parent
 		self.N = 0
 		self.W = 0
 		self.Q = 0
@@ -18,7 +20,8 @@ class Node():
 
 	def get_UCB(self, parent_N):
 		c_puct = 4
-		ret = self.Q + (np.sqrt(parent_N) * c_puct * self.P / (1 + self.N))
+		t = 1 if self.player else -1
+		ret = (self.Q * t) + (np.sqrt(parent_N) * c_puct * self.P / (1 + self.N))
 		return ret
 
 
@@ -26,7 +29,7 @@ class MonteCarloTreeSearch():
 	def __init__(self):
 		self.reset_board()
 		self.agent = Agent()
-		self.root = Node(np.expand_dims(self.white_state.serialize_ip(1), axis=0), 1, True)
+		self.root = Node(np.expand_dims(self.white_state.serialize_ip(1), axis=0), None, 1, True) 
 
 	def add_dirichlet_noise(self, node):
 		child_nodes = []
@@ -40,8 +43,8 @@ class MonteCarloTreeSearch():
 		for _, v in node.child_nodes.items():
 			v.P = noised_cn[cntr]
 			cntr += 1
-	
-	def select_best(self, node):
+
+	def select_action(self, node):
 		best_action = None
 		best_ucb = None
 		for action, c_node in node.child_nodes.items():
@@ -50,9 +53,50 @@ class MonteCarloTreeSearch():
 				best_ucb = ucb
 				best_action = action
 
-		return best_action
+		return best_action, best_ucb
+
+	def backup(self, node, result):
+		while True:
+			node.N += 1
+			node.W += result
+			node.Q = node.W / node.N
+			result = -result
+			if node.parent is None:
+				break
+			node = node.parent
+
+	def reset_board(self):
+		self.white_state = State(1)
+		self.black_state = State(0, board=self.white_state.board)
 			
-	
+	def traverse(self, node, move_number):
+		player = node.player
+		visited = []
+		game_over_flag = False
+		while len(node.child_nodes) != 0:
+			action = self.select_action(node)
+			node = self.push_action(node, action, move_number)
+			visited.append(node)
+			move_number += 1
+			player = not player
+			if self.white_state.is_over():
+				game_over_flag = True
+				break
+
+		if not game_over_flag:
+			pre_agent_state = self.white_state if player else self.black_state
+			post_agent_state = self.black_state if player else self.white_state
+			value = self.simulate_new(node, pre_agent_state, post_agent_state, player, move_number)
+		else:
+			value = self.white_state.score()
+			if value != 0:
+				if value == -1:
+					assert player == False
+				else:
+					assert player == True
+
+		return node, value, len(visited)
+			
 	def simulate_new(self, node, pre_agent_state, post_agent_state, player, move_number):
 		assert node.player == player
 
@@ -60,88 +104,86 @@ class MonteCarloTreeSearch():
 		for action, probability in policy:
 			pre_agent_state.board.push(action)
 			state = np.expand_dims(post_agent_state.serialize_ip(move_number), axis=0)
-			node.child_nodes[action] = Node(state, probability, not player)
+			node.child_nodes[action] = Node(state, node, probability, not player)
 			pre_agent_state.board.pop()
 
 		self.add_dirichlet_noise(node)
-		value = value if player else -value
 
 		return value
 
-	def select_new(self, node):
-		move, max_prob = None, 0.0
-		for k, v in node.child_nodes.items():
-			if max_prob < v.P:
-				max_prob = v.P
-				move = k
+	def simulate(self, prev_node, move_number):
+		root = prev_node
+		white_old_ip = self.white_state.ip
+		black_old_ip = self.black_state.ip
 
-		return move
-
-	def simulate(self, node, move_number):
-		value = None
-		player = node.player
 		for i in range(1600):
-			pre_agent_state = self.white_state if player else self.black_state
-			post_agent_state = self.black_state if player else self.white_state
-			value = self.simulate_new(node, pre_agent_state, post_agent_state, player, move_number)
-			if pre_agent_state.is_over():
-				value = pre_agent_state.score()
-				break
-			action = self.select_new(node)
-			node = node.child_nodes[action]
-			self.white_state.board.push(action)
-			self.white_state.ip = self.white_state.serialize_ip(move_number)
-			self.black_state.ip = self.black_state.serialize_ip(move_number)
-			player = not player
-			if player: move_number += 1
+			node, result, pop_len = self.traverse(root, move_number)
+			self.backup(node, result)
+			
+			for i in range(pop_len):
+				self.white_state.board.pop()
 
-		return value
+			self.white_state.ip = white_old_ip
+			self.black_state.ip = black_old_ip
 
-	def traverse(self):
-		node = self.root
-		visited = [node]
-		player = True
+		return root
+
+	def push_action(self, node, action, move_number):
+		self.white_state.board.push(action)
+
+		self.white_state.ip = self.white_state.serialize_ip(move_number)
+		self.black_state.ip = self.black_state.serialize_ip(move_number)
+
+		return node.child_nodes[action]
+
+	def self_play(self):
+		prev_node = self.root
+		player = prev_node.player
+		self.reset_board()
 		move_number = 1
 		self.white_state.ip = self.white_state.serialize_ip(move_number)
 		self.black_state.ip = self.black_state.serialize_ip(move_number)
-		while len(node.child_nodes) != 0:
-			action = self.select_best(node)
-			node = node.child_nodes[action]
-			self.white_state.board.push(action)
-			self.white_state.ip = self.white_state.serialize_ip(move_number)
-			self.black_state.ip = self.black_state.serialize_ip(move_number)
-			visited.append(node)
-			
+		visited = [] # node, action, ucb
+		print(self.white_state.board)
+		while True:
+			move_number += 1
+			prev_node = self.simulate(prev_node, move_number)
+			action, ucb = self.select_action(prev_node)
+			node = self.push_action(prev_node, action, move_number)
+			visited.append((prev_node, action, ucb))
 			print(self.white_state.board)
-
+			if self.white_state.is_over():
+				value = self.white_state.score()
+				if value != 0 :
+					win_player = True if value > 0 else False
+				else:
+					win_player = None
+				break
 			player = not player
-			if player: move_number += 1
+			assert node.player == player
+			prev_node = node
+
+
+		# adding value to dataset and saving
+		dataset = [] # state, action, ucb, value
+		for n, a, p in visited:
+			if win_player is None:
+				v = 0
+			elif n.player == win_player:
+				v = 1
+			else:
+				v = -1
+			dataset.append((n.state, a, p, v))
 		
-		return visited, move_number
+		with open('datasets/game_' + str(game) + '.pkl', 'wb') as op:
+			dump(dataset, op)
 
-	def backpropagate(self, simulation, result):
-		simulation.reverse()
-		for n in simulation:
-			n.N += 1
-			n.W += result
-			n.Q = n.W / n.N
-			result = -result
-
-	def reset_board(self):
-		self.white_state = State(1)
-		self.black_state = State(0, board=self.white_state.board)
 
 if __name__ == '__main__':
 	mct = MonteCarloTreeSearch()
-	simulation = []
-	cntr = 0
-	max_len = 0
-	while len(simulation) < 50:
-		simulation, move_number = mct.traverse()
-		result = mct.simulate(simulation[-1], move_number)
-		mct.backpropagate(simulation, result)
-		mct.reset_board()
-		cntr += 1 
-		print(f'Simulation: {cntr} Depth of tree: {len(simulation)}')
-		if cntr == 1000: break
-
+	game_counter = 1
+	iteration = 0
+	while True:
+		mct.self_play(game_counter)
+		iteration = Agent.train(iteration)
+		game_counter += 1
