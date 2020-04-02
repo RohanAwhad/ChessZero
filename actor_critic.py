@@ -132,42 +132,39 @@ class Agent():
 				if sub_r == 1: return 61
 				if sub_r == -1: return 63
 
-	def get_location(self, move, agent_board):
-		agent_board.board.push(move)
-		temp_ip = agent_board.serialize_ip(1)
-		_ = agent_board.board.pop()
-		
-		a = temp_ip[:, :, :12] - agent_board.ip[:, :, :12]
-		pick_r, pick_c, _ = np.where(a==1)
-		post_r, post_c, _ = np.where(a==-1)
-		
-		sub_r = post_r - pick_r
-		sub_c = post_c - pick_c
+	def get_location(self, move, player_color):
 
-		if len(sub_r) >= 2:
-			for i in range(len(sub_r)):
-				if sub_r[i] == sub_c[i] and sub_r[i] == 0:
-					continue
-				else:
-					break
+		#without agent_board
+		move = move.uci()
+		flip_flag = True if player_color == 0 else False
 
-			sub_r, sub_c = sub_r[i], sub_c[i]
+		pickup_col = ord(move[0]) - ord('a')
+		pickup_row = int(move[1]) - 1
 
-		if len(move.uci()) == 5 and move.uci()[-1].lower() != 'q':
+		post_col = ord(move[2]) - ord('a')
+		post_row = int(move[3]) - 1
+
+		if flip_flag:
+			post_row = 7 - post_row
+			pickup_row = 7 - pickup_row
+
+		sub_row = post_row - pickup_row
+		sub_col = post_col - pickup_col
+
+		if len(move) == 5:
+			promo_to = move[4].lower()
 			promo_fl = True
-			promo_to = move.uci()[-1].lower()
 		else:
-			promo_fl = False
 			promo_to = None
+			promo_fl = False
 
-		d = self.get_plane(sub_r, sub_c, promo_fl, promo_to)
-		d = d if type(d) == int or type(d) == np.int64 else d[0]
-		h, w = pick_r, pick_c
-		return (h[0], w[0], d)
+		depth = self.get_plane(sub_row, sub_col, promo_fl, promo_to)
+
+		return (pickup_row, pickup_col, depth) 
 
 	def serialize_op(self, policy, agent_board, ip_rep):
 		legal_moves = list(agent_board.board.legal_moves)
-		locations = [(m, self.get_location(m, agent_board)) for m in legal_moves]
+		locations = [(m, self.get_location(m, agent_board.player_color)) for m in legal_moves]
 		ret = np.zeros((policy.shape))
 		for _, l in locations:
 			r, c, d = l
@@ -188,6 +185,32 @@ class Agent():
 		ip_rep = self.board_rep(np.squeeze(ip, axis=0))
 		serialized_pred = self.serialize_op(policy, agent_board, ip_rep)
 		return value, serialized_pred
+
+	def train(self, iteration):
+		dataset = []
+		folder = f'datasets/iteration_{iteration}/'
+		data_files = os.listdir(folder)
+		
+		if len(data_files < 10):
+			return 
+
+		for f in data_files:
+			with open(folder+f, 'rb') as ip:
+				temp_data = load(ip)
+			dataset.extend(temp_data)
+
+		# dataset = [(state, action, policy, value)]
+		X = np.zeros((4096, 8, 8, 91))
+		Y_policy = np.zeros((4096, 8, 8, 73))
+		Y_value = np.zeros((4096, 1))
+		for i in range(len(dataset)):
+			state, action, policy, value = dataset[i]
+			X[i] = np.squeeze(state)
+			r, c, d = self.get_location(action, X[i, 0, 0, -1])
+			Y_policy[i, r, c, d] = policy
+			Y_value[i] = value
+
+		self.nn.fit(X, {'value_op' : Y_value, 'policy_op' : Y_policy})
 
 if __name__ == '__main__':
 	agent = Agent()
