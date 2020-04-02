@@ -5,6 +5,7 @@ from state import State
 import numpy as np
 import sys
 from pickle import dump
+import os
 
 class Node():
 	def __init__(self, state, parent, policy, player):
@@ -190,6 +191,8 @@ class MonteCarloTreeSearch():
 			p -= n.child_nodes[a].Q
 			dataset.append((n.state, a, p, v, b))
 		
+		if not os.path.exists(f'datasets/iteration_{iteration}'):
+			os.makedirs(f'datasets/iteration_{iteration}')
 		with open('datasets/iteration_' + str(iteration) + '/game_' + str(game) + '.pkl', 'wb') as op:
 			dump(dataset, op)
 
