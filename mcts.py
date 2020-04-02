@@ -172,6 +172,10 @@ class MonteCarloTreeSearch():
 				else:
 					win_player = None
 				break
+			if move_number / 2 > 100:
+				value = 0
+				win_player = None
+				break
 			player = not player
 			assert node.player == player
 			prev_node = node
