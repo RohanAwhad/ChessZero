@@ -163,10 +163,6 @@ class MonteCarloTreeSearch():
 			visited.append((prev_node, action, ucb))
 			node = self.push_action(prev_node, action, move_number)
 			print(self.white_state.board)
-			for i in range(12):
-				print(self.white_state.ip[:, :, i])
-			for i in range(12):
-				print(self.black_state.ip[:, :, i])
 			if self.white_state.is_over():
 				value = self.white_state.score()
 				if value != 0 :
