@@ -162,7 +162,9 @@ class MonteCarloTreeSearch():
 			action, ucb = self.select_action(prev_node)
 			visited.append((prev_node, action, ucb))
 			node = self.push_action(prev_node, action, move_number)
+			print()
 			print(self.white_state.board)
+			print()
 			if self.white_state.is_over():
 				value = self.white_state.score()
 				if value != 0 :
